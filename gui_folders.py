@@ -1,9 +1,8 @@
 """
-Frame de visualización de carpetas del buzón de Outlook.
-Muestra la estructura jerárquica de carpetas en un Treeview.
+Frame de visualización de carpetas del buzón.
+Usa el OutlookWorker para cargar carpetas (COM en su thread).
 """
 
-import threading
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 
@@ -11,94 +10,54 @@ from ttkbootstrap.constants import *
 class FoldersFrame(ttk.Frame):
     """Frame con el árbol de carpetas del buzón."""
 
-    def __init__(self, parent, outlook_client):
+    def __init__(self, parent, worker):
         super().__init__(parent, padding=10)
-        self.client = outlook_client
+        self.worker = worker
         self._build_ui()
 
     def _build_ui(self):
-        """Construye la interfaz."""
-        # --- Barra superior ---
-        top_bar = ttk.Frame(self)
-        top_bar.pack(fill=X, pady=(0, 10))
+        top = ttk.Frame(self)
+        top.pack(fill=X, pady=(0, 8))
 
-        ttk.Label(
-            top_bar, text="📁 Carpetas del Buzón",
-            font=("Segoe UI", 14, "bold")
-        ).pack(side=LEFT)
+        ttk.Label(top, text="📁 Carpetas del Buzón", font=("Segoe UI", 14, "bold")).pack(side=LEFT)
+        self.btn_ref = ttk.Button(top, text="🔄 Actualizar", bootstyle=INFO, command=self._load)
+        self.btn_ref.pack(side=RIGHT)
 
-        self.btn_refresh = ttk.Button(
-            top_bar, text="🔄 Actualizar", bootstyle=INFO,
-            command=self._load_folders
-        )
-        self.btn_refresh.pack(side=RIGHT)
+        tf = ttk.Frame(self)
+        tf.pack(fill=BOTH, expand=True)
 
-        # --- Treeview ---
-        tree_frame = ttk.Frame(self)
-        tree_frame.pack(fill=BOTH, expand=True)
-
-        columns = ("items",)
-        self.tree = ttk.Treeview(
-            tree_frame, columns=columns, show="tree headings",
-            selectmode="browse"
-        )
+        self.tree = ttk.Treeview(tf, columns=("items",), show="tree headings", selectmode="browse")
         self.tree.heading("#0", text="Carpeta", anchor=W)
         self.tree.heading("items", text="Items", anchor=E)
         self.tree.column("#0", width=400, stretch=True)
         self.tree.column("items", width=80, anchor=E, stretch=False)
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient=VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-
+        vsb = ttk.Scrollbar(tf, orient=VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar.pack(side=RIGHT, fill=Y)
+        vsb.pack(side=RIGHT, fill=Y)
 
-        # --- Status ---
-        self.status_var = ttk.StringVar(value="Presiona 'Actualizar' para cargar las carpetas")
-        ttk.Label(self, textvariable=self.status_var, font=("Segoe UI", 9)).pack(fill=X, pady=(5, 0))
+        self.v_status = ttk.StringVar(value="Presiona 'Actualizar' para cargar.")
+        ttk.Label(self, textvariable=self.v_status, font=("Segoe UI", 9)).pack(fill=X, pady=(4, 0))
 
-    def _load_folders(self):
-        """Carga las carpetas en un thread separado."""
-        self.btn_refresh.configure(state=DISABLED)
-        self.status_var.set("Cargando carpetas...")
+    def _load(self):
+        self.btn_ref.configure(state=DISABLED)
+        self.v_status.set("Cargando carpetas...")
         self.tree.delete(*self.tree.get_children())
+        self.worker.submit("list_folders", {"max_depth": 2}, self._on_data, self._on_err)
 
-        thread = threading.Thread(target=self._load_folders_thread, daemon=True)
-        thread.start()
-
-    def _load_folders_thread(self):
-        """Thread que carga las carpetas."""
-        try:
-            folders = self.client.list_folders(max_depth=2)
-            self.after(0, self._populate_tree, folders)
-        except Exception as e:
-            self.after(0, self._on_error, str(e))
-
-    def _populate_tree(self, folders):
-        """Puebla el Treeview con los datos de carpetas."""
-        self.tree.delete(*self.tree.get_children())
-
-        # Mapeo de indent -> último nodo padre insertado
-        parent_map = {-1: ""}  # root
-
+    def _on_data(self, folders):
+        parent_map = {-1: ""}
         for name, path, count, indent in folders:
-            parent_indent = indent - 1
-            parent_id = parent_map.get(parent_indent, "")
-
+            pid = parent_map.get(indent - 1, "")
             icon = "📁" if indent == 0 else "📂"
-            node_id = self.tree.insert(
-                parent_id, END,
-                text=f" {icon} {name}",
-                values=(str(count) if count else "",),
-                open=(indent == 0)
-            )
-            parent_map[indent] = node_id
+            nid = self.tree.insert(pid, END, text=f" {icon} {name}",
+                                   values=(str(count) if count else "",), open=(indent == 0))
+            parent_map[indent] = nid
 
-        total = len(folders)
-        self.status_var.set(f"✓ {total} carpetas cargadas")
-        self.btn_refresh.configure(state=NORMAL)
+        self.v_status.set(f"✓ {len(folders)} carpetas cargadas")
+        self.btn_ref.configure(state=NORMAL)
 
-    def _on_error(self, error_msg):
-        """Maneja errores de carga."""
-        self.status_var.set(f"❌ Error: {error_msg}")
-        self.btn_refresh.configure(state=NORMAL)
+    def _on_err(self, msg):
+        self.v_status.set(f"❌ Error: {msg}")
+        self.btn_ref.configure(state=NORMAL)

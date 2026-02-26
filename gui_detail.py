@@ -5,7 +5,7 @@ Muestra toda la información del correo en una ventana separada.
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from ttkbootstrap.scrolledtext import ScrolledText
+from tkinter.scrolledtext import ScrolledText
 
 
 class EmailDetailDialog(ttk.Toplevel):

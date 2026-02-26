@@ -1,181 +1,128 @@
 """
 Diálogo de exportación de archivos adjuntos.
-Permite configurar directorio, organización y tipos de archivo antes de exportar.
+Usa el OutlookWorker para la exportación (operaciones COM en su thread).
 """
 
 import os
-import threading
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from tkinter import filedialog, messagebox
 
-from attachments import export_attachments
-
 
 class AttachmentsDialog(ttk.Toplevel):
-    """Diálogo modal para exportar adjuntos."""
+    """Diálogo para exportar adjuntos desde los resultados de búsqueda."""
 
-    def __init__(self, parent, results: list):
+    def __init__(self, parent, worker):
         super().__init__(parent)
         self.title("📎 Exportar Adjuntos")
-        self.geometry("500x420")
+        self.geometry("500x360")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
 
-        self.results = results
-        self._build_ui()
+        self.worker = worker
+        n_att = len([r for r in worker.last_results if r.get("has_attachments")])
+        n_total = len(worker.last_results)
+        self._build_ui(n_att, n_total)
 
-        # Centrar
         self.update_idletasks()
         x = parent.winfo_rootx() + (parent.winfo_width() - 500) // 2
-        y = parent.winfo_rooty() + (parent.winfo_height() - 420) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - 360) // 2
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
 
-    def _build_ui(self):
-        """Construye la interfaz del diálogo."""
-        main = ttk.Frame(self, padding=20)
-        main.pack(fill=BOTH, expand=True)
+    def _build_ui(self, n_att, n_total):
+        m = ttk.Frame(self, padding=20)
+        m.pack(fill=BOTH, expand=True)
 
-        # Info
-        emails_with_att = sum(1 for r in self.results if r.get("has_attachments"))
-        ttk.Label(
-            main,
-            text=f"Se encontraron {emails_with_att} correos con adjuntos de {len(self.results)} totales.",
-            font=("Segoe UI", 10),
-        ).pack(anchor=W, pady=(0, 15))
+        ttk.Label(m, text=f"{n_att} correos con adjuntos de {n_total} totales.",
+                  font=("Segoe UI", 10)).pack(anchor=W, pady=(0, 12))
 
-        # --- Directorio destino ---
-        ttk.Label(main, text="Directorio destino:", font=("Segoe UI", 10, "bold")).pack(anchor=W)
-        dir_frame = ttk.Frame(main)
-        dir_frame.pack(fill=X, pady=(2, 10))
+        # Directorio
+        ttk.Label(m, text="Directorio destino:", font=("Segoe UI", 10, "bold")).pack(anchor=W)
+        df = ttk.Frame(m)
+        df.pack(fill=X, pady=(2, 8))
+        self.v_dir = ttk.StringVar(value=os.path.join(os.path.expanduser("~"), "Desktop", "adjuntos_outlook"))
+        ttk.Entry(df, textvariable=self.v_dir, font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, padx=(0, 4))
+        ttk.Button(df, text="📂", bootstyle=OUTLINE, command=self._browse, width=3).pack(side=RIGHT)
 
-        default_dir = os.path.join(os.path.expanduser("~"), "Desktop", "adjuntos_outlook")
-        self.dir_var = ttk.StringVar(value=default_dir)
-        ttk.Entry(dir_frame, textvariable=self.dir_var, font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, padx=(0, 5))
-        ttk.Button(dir_frame, text="📂 Examinar", bootstyle=OUTLINE, command=self._browse_dir).pack(side=RIGHT)
+        # Organización
+        ttk.Label(m, text="Organizar por:", font=("Segoe UI", 10, "bold")).pack(anchor=W)
+        of = ttk.Frame(m)
+        of.pack(fill=X, pady=(2, 8))
+        self.v_org = ttk.StringVar(value="flat")
+        for txt, val in [("Flat", "flat"), ("Remitente", "sender"), ("Fecha", "date"), ("Asunto", "subject")]:
+            ttk.Radiobutton(of, text=txt, variable=self.v_org, value=val).pack(side=LEFT, padx=(0, 12))
 
-        # --- Organización ---
-        ttk.Label(main, text="Organizar por:", font=("Segoe UI", 10, "bold")).pack(anchor=W)
-        self.organize_var = ttk.StringVar(value="flat")
-        org_frame = ttk.Frame(main)
-        org_frame.pack(fill=X, pady=(2, 10))
+        # Tipos
+        ttk.Label(m, text="Tipos (vacío=todos):", font=("Segoe UI", 10, "bold")).pack(anchor=W)
+        self.v_types = ttk.StringVar()
+        ttk.Entry(m, textvariable=self.v_types, font=("Segoe UI", 9)).pack(fill=X, pady=(2, 3))
+        ttk.Label(m, text="Ej: .pdf, .xlsx, .docx", font=("Segoe UI", 8), foreground="gray").pack(anchor=W, pady=(0, 8))
 
-        options = [
-            ("Sin organizar (flat)", "flat"),
-            ("Por remitente", "sender"),
-            ("Por fecha", "date"),
-            ("Por asunto", "subject"),
-        ]
-        for text, value in options:
-            ttk.Radiobutton(
-                org_frame, text=text, variable=self.organize_var, value=value
-            ).pack(side=LEFT, padx=(0, 15))
+        # Progreso
+        self.v_prog = ttk.DoubleVar()
+        self.prog_bar = ttk.Progressbar(m, variable=self.v_prog, bootstyle=SUCCESS)
+        self.prog_bar.pack(fill=X, pady=(0, 3))
+        self.v_status = ttk.StringVar()
+        ttk.Label(m, textvariable=self.v_status, font=("Segoe UI", 9)).pack(anchor=W, pady=(0, 8))
 
-        # --- Filtro de tipos ---
-        ttk.Label(main, text="Tipos de archivo (vacío = todos):", font=("Segoe UI", 10, "bold")).pack(anchor=W)
-        self.types_var = ttk.StringVar(value="")
-        ttk.Entry(main, textvariable=self.types_var, font=("Segoe UI", 9)).pack(fill=X, pady=(2, 5))
-        ttk.Label(
-            main, text="Ejemplo: .pdf, .xlsx, .docx", font=("Segoe UI", 8), foreground="gray"
-        ).pack(anchor=W, pady=(0, 15))
+        # Botones
+        bf = ttk.Frame(m)
+        bf.pack(fill=X)
+        self.btn_export = ttk.Button(bf, text="📎 Exportar", bootstyle=SUCCESS, command=self._do_export)
+        self.btn_export.pack(side=LEFT, padx=(0, 8))
+        ttk.Button(bf, text="Cerrar", bootstyle=SECONDARY, command=self.destroy).pack(side=RIGHT)
 
-        # --- Barra de progreso ---
-        self.progress_var = ttk.DoubleVar(value=0)
-        self.progress_bar = ttk.Progressbar(main, variable=self.progress_var, bootstyle=SUCCESS)
-        self.progress_bar.pack(fill=X, pady=(0, 5))
+    def _browse(self):
+        d = filedialog.askdirectory(title="Directorio destino", initialdir=self.v_dir.get())
+        if d: self.v_dir.set(d)
 
-        self.progress_label = ttk.StringVar(value="")
-        ttk.Label(main, textvariable=self.progress_label, font=("Segoe UI", 9)).pack(anchor=W, pady=(0, 10))
-
-        # --- Botones ---
-        btn_frame = ttk.Frame(main)
-        btn_frame.pack(fill=X)
-
-        self.btn_export = ttk.Button(
-            btn_frame, text="📎 Exportar Adjuntos", bootstyle=SUCCESS,
-            command=self._start_export
-        )
-        self.btn_export.pack(side=LEFT, padx=(0, 10))
-
-        ttk.Button(
-            btn_frame, text="Cerrar", bootstyle=SECONDARY,
-            command=self.destroy
-        ).pack(side=RIGHT)
-
-    def _browse_dir(self):
-        """Abre diálogo para seleccionar directorio."""
-        directory = filedialog.askdirectory(
-            title="Seleccionar directorio destino",
-            initialdir=self.dir_var.get()
-        )
-        if directory:
-            self.dir_var.set(directory)
-
-    def _start_export(self):
-        """Inicia la exportación en un thread."""
-        output_dir = self.dir_var.get().strip()
-        if not output_dir:
-            messagebox.showwarning("Atención", "Selecciona un directorio destino.", parent=self)
+    def _do_export(self):
+        out = self.v_dir.get().strip()
+        if not out:
+            messagebox.showwarning("Atención", "Selecciona un directorio.", parent=self)
             return
 
-        organize = self.organize_var.get()
-        types_str = self.types_var.get().strip()
-        file_types = None
-        if types_str:
-            file_types = [t.strip() for t in types_str.split(",") if t.strip()]
+        types_str = self.v_types.get().strip()
+        file_types = [t.strip() for t in types_str.split(",") if t.strip()] if types_str else None
 
         self.btn_export.configure(state=DISABLED)
-        self.progress_var.set(0)
-        self.progress_label.set("Exportando...")
+        self.v_status.set("Exportando...")
+        self.v_prog.set(0)
 
-        thread = threading.Thread(
-            target=self._export_thread,
-            args=(output_dir, organize, file_types),
-            daemon=True,
+        # Registrar callback de progreso en el app
+        app = self.winfo_toplevel()
+        original_progress = app._on_attachment_progress
+
+        def progress_cb(cur, total, msg):
+            pct = (cur / total * 100) if total > 0 else 0
+            self.v_prog.set(pct)
+            self.v_status.set(msg)
+
+        app._on_attachment_progress = progress_cb
+
+        self.worker.submit(
+            "export_attachments",
+            {"output_dir": out, "organize_by": self.v_org.get(), "file_types": file_types},
+            lambda stats: self._on_done(stats, app, original_progress),
+            lambda err: self._on_err(err, app, original_progress),
         )
-        thread.start()
 
-    def _export_thread(self, output_dir, organize, file_types):
-        """Thread de exportación."""
-        try:
-            stats = export_attachments(
-                results=self.results,
-                output_dir=output_dir,
-                organize_by=organize,
-                file_types=file_types,
-                progress_callback=self._on_progress,
-            )
-            self.after(0, self._on_complete, stats)
-        except Exception as e:
-            self.after(0, self._on_error, str(e))
-
-    def _on_progress(self, current, total, message):
-        """Callback de progreso."""
-        pct = (current / total * 100) if total > 0 else 0
-        self.after(0, lambda: self.progress_var.set(pct))
-        self.after(0, lambda: self.progress_label.set(message))
-
-    def _on_complete(self, stats):
-        """Exportación completada."""
-        self.progress_var.set(100)
-        self.progress_label.set("✓ Exportación completada")
+    def _on_done(self, stats, app, orig_cb):
+        app._on_attachment_progress = orig_cb
+        self.v_prog.set(100)
+        self.v_status.set("✓ Completado")
         self.btn_export.configure(state=NORMAL)
 
-        msg = (
-            f"📧 Correos procesados: {stats['emails_with_attachments']}\n"
-            f"📎 Adjuntos exportados: {stats['exported']}\n"
-        )
-        if stats["skipped"]:
-            msg += f"⏭️ Omitidos: {stats['skipped']}\n"
-        if stats["errors"]:
-            msg += f"❌ Errores: {stats['errors']}\n"
-        msg += f"\n📁 Directorio: {self.dir_var.get()}"
+        msg = (f"📧 Correos: {stats['emails_with_attachments']}\n"
+               f"📎 Exportados: {stats['exported']}\n")
+        if stats["skipped"]: msg += f"⏭️ Omitidos: {stats['skipped']}\n"
+        if stats["errors"]: msg += f"❌ Errores: {stats['errors']}\n"
+        msg += f"\n📁 {self.v_dir.get()}"
+        messagebox.showinfo("Completado", msg, parent=self)
 
-        messagebox.showinfo("Exportación Completada", msg, parent=self)
-
-    def _on_error(self, error_msg):
-        """Error en la exportación."""
-        self.progress_label.set(f"❌ Error: {error_msg}")
+    def _on_err(self, err, app, orig_cb):
+        app._on_attachment_progress = orig_cb
+        self.v_status.set("❌ Error")
         self.btn_export.configure(state=NORMAL)
-        messagebox.showerror("Error", f"Error durante la exportación:\n{error_msg}", parent=self)
+        messagebox.showerror("Error", err, parent=self)

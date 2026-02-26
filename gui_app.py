@@ -1,16 +1,14 @@
 """
 Outlook Email Search Tool - Aplicación GUI Principal
-Ventana principal con tabs para búsqueda, búsqueda rápida y carpetas.
+Ventana principal con tabs para búsqueda y carpetas.
+Usa un worker thread dedicado para operaciones COM con Outlook.
 """
 
-import sys
-import threading
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from tkinter import messagebox
 
-from outlook_client import OutlookClient
-from search import EmailSearch
+from outlook_worker import OutlookWorker
 from gui_search import SearchFrame
 from gui_folders import FoldersFrame
 
@@ -26,74 +24,52 @@ class OutlookSearchApp(ttk.Window):
             minsize=(900, 600),
         )
 
-        # Variables
-        self.client = None
-        self.searcher = None
+        self.worker = None
+        self.search_frame = None
+        self.folders_frame = None
 
-        # Mostrar splash y conectar
         self._show_splash()
+        self._start_worker()
 
     def _show_splash(self):
-        """Muestra pantalla de carga mientras conecta a Outlook."""
-        self.splash_frame = ttk.Frame(self)
-        self.splash_frame.place(relx=0.5, rely=0.5, anchor=CENTER)
+        """Muestra pantalla de carga."""
+        self.splash = ttk.Frame(self)
+        self.splash.place(relx=0.5, rely=0.5, anchor=CENTER)
 
+        ttk.Label(self.splash, text="📧", font=("Segoe UI Emoji", 48)).pack(pady=(0, 10))
         ttk.Label(
-            self.splash_frame,
-            text="📧",
-            font=("Segoe UI Emoji", 48),
-        ).pack(pady=(0, 10))
-
-        ttk.Label(
-            self.splash_frame,
-            text="Outlook Email Search Tool",
+            self.splash, text="Outlook Email Search Tool",
             font=("Segoe UI", 22, "bold"),
         ).pack()
-
         ttk.Label(
-            self.splash_frame,
-            text="Banco Tanner — Herramienta Interna",
-            font=("Segoe UI", 11),
-            foreground="gray",
+            self.splash, text="Banco Tanner — Herramienta Interna",
+            font=("Segoe UI", 11), foreground="gray",
         ).pack(pady=(5, 20))
 
         self.splash_status = ttk.StringVar(value="Conectando a Outlook...")
-        ttk.Label(
-            self.splash_frame,
-            textvariable=self.splash_status,
-            font=("Segoe UI", 10),
-        ).pack()
+        ttk.Label(self.splash, textvariable=self.splash_status, font=("Segoe UI", 10)).pack()
 
-        self.splash_progress = ttk.Progressbar(
-            self.splash_frame, mode="indeterminate", length=300, bootstyle=INFO
-        )
-        self.splash_progress.pack(pady=(10, 0))
-        self.splash_progress.start(15)
+        self.splash_bar = ttk.Progressbar(self.splash, mode="indeterminate", length=300, bootstyle=INFO)
+        self.splash_bar.pack(pady=(10, 0))
+        self.splash_bar.start(15)
 
-        # Conectar en thread
-        thread = threading.Thread(target=self._connect_outlook, daemon=True)
-        thread.start()
+    def _start_worker(self):
+        """Inicia el worker thread de Outlook."""
+        self.worker = OutlookWorker(self)
+        self.worker.start()
 
-    def _connect_outlook(self):
-        """Conecta a Outlook en background."""
-        try:
-            self.client = OutlookClient()
-            self.searcher = EmailSearch(self.client)
-            email = self.client.get_account_email()
-            self.after(0, self._on_connected, email)
-        except Exception as e:
-            self.after(0, self._on_connection_error, str(e))
+    # === Callbacks del worker ===
 
-    def _on_connected(self, email: str):
-        """Outlook conectado exitosamente."""
-        self.splash_progress.stop()
-        self.splash_frame.destroy()
+    def _on_worker_ready(self, email: str):
+        """Worker conectado exitosamente."""
+        self.splash_bar.stop()
+        self.splash.destroy()
         self._build_main_ui(email)
 
-    def _on_connection_error(self, error_msg: str):
-        """Error de conexión a Outlook."""
-        self.splash_progress.stop()
-        self.splash_status.set(f"❌ Error: {error_msg}")
+    def _on_worker_error(self, error_msg: str):
+        """Error de conexión."""
+        self.splash_bar.stop()
+        self.splash_status.set(f"❌ Error")
         messagebox.showerror(
             "Error de Conexión",
             f"No se pudo conectar a Outlook.\n\n{error_msg}\n\n"
@@ -101,14 +77,25 @@ class OutlookSearchApp(ttk.Window):
         )
         self.destroy()
 
+    def _on_search_progress(self, current, msg):
+        """Progreso de búsqueda — actualiza la UI."""
+        if self.search_frame:
+            self.search_frame.status_var.set(f"🔍 {msg}")
+
+    def _on_attachment_progress(self, current, total, msg):
+        """Progreso de exportación de adjuntos."""
+        pass  # Manejado desde gui_attachments
+
+    # === UI Principal ===
+
     def _build_main_ui(self, email: str):
-        """Construye la interfaz principal tras conexión exitosa."""
-        # --- Barra de menú ---
+        """Construye la interfaz principal."""
+        # --- Menú ---
         menubar = ttk.Menu(self)
         self.configure(menu=menubar)
 
         file_menu = ttk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Salir", command=self.destroy, accelerator="Alt+F4")
+        file_menu.add_command(label="Salir", command=self.destroy)
         menubar.add_cascade(label="Archivo", menu=file_menu)
 
         help_menu = ttk.Menu(menubar, tearoff=0)
@@ -120,66 +107,52 @@ class OutlookSearchApp(ttk.Window):
         header.pack(fill=X)
 
         ttk.Label(
-            header,
-            text="📧 Outlook Email Search Tool",
+            header, text="📧 Outlook Email Search Tool",
             font=("Segoe UI", 16, "bold"),
         ).pack(side=LEFT)
 
         ttk.Label(
-            header,
-            text=f"📬 {email}",
-            font=("Segoe UI", 10),
-            foreground="gray",
+            header, text=f"📬 {email}",
+            font=("Segoe UI", 10), foreground="gray",
         ).pack(side=RIGHT)
 
         ttk.Separator(self).pack(fill=X)
 
-        # --- Notebook principal ---
-        self.notebook = ttk.Notebook(self, padding=5)
-        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=5)
+        # --- Tabs ---
+        notebook = ttk.Notebook(self, padding=5)
+        notebook.pack(fill=BOTH, expand=True, padx=10, pady=5)
 
-        # Tab 1: Búsqueda
-        self.search_frame = SearchFrame(self.notebook, self.searcher)
-        self.notebook.add(self.search_frame, text="  🔍 Búsqueda  ")
+        self.search_frame = SearchFrame(notebook, self.worker)
+        notebook.add(self.search_frame, text="  🔍 Búsqueda  ")
 
-        # Tab 2: Carpetas
-        self.folders_frame = FoldersFrame(self.notebook, self.client)
-        self.notebook.add(self.folders_frame, text="  📁 Carpetas  ")
+        self.folders_frame = FoldersFrame(notebook, self.worker)
+        notebook.add(self.folders_frame, text="  📁 Carpetas  ")
 
-        # --- Barra de estado ---
+        # --- Status bar ---
+        ttk.Separator(self).pack(fill=X, side=BOTTOM)
         status_bar = ttk.Frame(self, padding=(15, 5))
         status_bar.pack(fill=X, side=BOTTOM)
 
-        ttk.Separator(self).pack(fill=X, side=BOTTOM)
-
         ttk.Label(
-            status_bar,
-            text=f"✓ Conectado a Outlook  |  Cuenta: {email}",
-            font=("Segoe UI", 9),
-            foreground="gray",
+            status_bar, text=f"✓ Conectado  |  {email}",
+            font=("Segoe UI", 9), foreground="gray",
         ).pack(side=LEFT)
 
         ttk.Label(
-            status_bar,
-            text="Banco Tanner — Herramienta Interna",
-            font=("Segoe UI", 9),
-            foreground="gray",
+            status_bar, text="Banco Tanner",
+            font=("Segoe UI", 9), foreground="gray",
         ).pack(side=RIGHT)
 
     def _show_about(self):
-        """Muestra diálogo 'Acerca de'."""
         messagebox.showinfo(
             "Acerca de",
             "📧 Outlook Email Search Tool\n\n"
-            "Herramienta para buscar, filtrar y exportar\n"
-            "correos desde Microsoft Outlook.\n\n"
-            "Banco Tanner — Herramienta Interna\n"
-            "Versión 2.0 — Interfaz Gráfica",
+            "Buscar, filtrar y exportar correos de Outlook.\n\n"
+            "Banco Tanner — v2.0 GUI",
         )
 
 
 def main():
-    """Punto de entrada de la aplicación."""
     app = OutlookSearchApp()
     app.mainloop()
 
