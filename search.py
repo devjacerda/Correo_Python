@@ -4,11 +4,7 @@ Permite búsquedas flexibles por múltiples criterios con soporte de filtros DAS
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-
-console = Console()
+from typing import Optional, Callable
 
 
 class EmailSearch:
@@ -33,6 +29,7 @@ class EmailSearch:
         recipient: Optional[str] = None,
         max_results: int = 500,
         subfolder: Optional[str] = None,
+        progress_callback: Optional[Callable] = None,
     ) -> list:
         """
         Busca correos con múltiples filtros.
@@ -48,6 +45,7 @@ class EmailSearch:
             recipient: Destinatario (para carpeta sent)
             max_results: Máximo de resultados a retornar
             subfolder: Subcarpeta dentro de la carpeta principal
+            progress_callback: Función opcional (current, message) para reportar progreso
             
         Returns:
             Lista de diccionarios con datos de cada correo
@@ -58,8 +56,7 @@ class EmailSearch:
             if subfolder:
                 target_folder = target_folder.Folders[subfolder]
         except Exception as e:
-            console.print(f"[red]Error al acceder a la carpeta: {e}[/red]")
-            return []
+            raise ValueError(f"Error al acceder a la carpeta: {e}")
 
         # Construir filtro DASL para mejor rendimiento
         dasl_filter = self._build_dasl_filter(
@@ -68,58 +65,50 @@ class EmailSearch:
 
         # Ejecutar búsqueda
         results = []
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Buscando correos...", total=None)
+        try:
+            items = target_folder.Items
+            items.Sort("[ReceivedTime]", True)  # Más recientes primero
 
-            try:
-                items = target_folder.Items
-                items.Sort("[ReceivedTime]", True)  # Más recientes primero
+            if dasl_filter:
+                items = items.Restrict(dasl_filter)
 
-                if dasl_filter:
-                    items = items.Restrict(dasl_filter)
+            count = 0
+            for item in items:
+                if count >= max_results:
+                    break
 
-                count = 0
-                for item in items:
-                    if count >= max_results:
-                        break
-
-                    try:
-                        # Filtros adicionales que no se pueden hacer con DASL
-                        if body_contains and body_contains.lower() not in (
-                            item.Body or ""
-                        ).lower():
-                            continue
-
-                        if recipient:
-                            recipients_str = ""
-                            try:
-                                for r in range(item.Recipients.Count):
-                                    recip = item.Recipients.Item(r + 1)
-                                    recipients_str += (
-                                        f"{recip.Name} {recip.Address} "
-                                    )
-                            except Exception:
-                                pass
-                            if recipient.lower() not in recipients_str.lower():
-                                continue
-
-                        email_data = self._extract_email_data(item)
-                        results.append(email_data)
-                        count += 1
-
-                    except Exception:
+                try:
+                    # Filtros adicionales que no se pueden hacer con DASL
+                    if body_contains and body_contains.lower() not in (
+                        item.Body or ""
+                    ).lower():
                         continue
 
-                progress.update(
-                    task, description=f"Búsqueda completada: {len(results)} correos encontrados"
-                )
+                    if recipient:
+                        recipients_str = ""
+                        try:
+                            for r in range(item.Recipients.Count):
+                                recip = item.Recipients.Item(r + 1)
+                                recipients_str += (
+                                    f"{recip.Name} {recip.Address} "
+                                )
+                        except Exception:
+                            pass
+                        if recipient.lower() not in recipients_str.lower():
+                            continue
 
-            except Exception as e:
-                console.print(f"[red]Error durante la búsqueda: {e}[/red]")
+                    email_data = self._extract_email_data(item)
+                    results.append(email_data)
+                    count += 1
+
+                    if progress_callback:
+                        progress_callback(count, f"Encontrados: {count} correos...")
+
+                except Exception:
+                    continue
+
+        except Exception as e:
+            raise RuntimeError(f"Error durante la búsqueda: {e}")
 
         return results
 
@@ -161,9 +150,8 @@ class EmailSearch:
                     f"@SQL=\"urn:schemas:httpmail:datereceived\" >= '{date_str}'"
                 )
             except ValueError:
-                console.print(
-                    f"[yellow]⚠ Formato de fecha_desde inválido: {date_from}. "
-                    f"Use DD-MM-YYYY[/yellow]"
+                raise ValueError(
+                    f"Formato de fecha_desde inválido: {date_from}. Use DD-MM-YYYY"
                 )
 
         if date_to:
@@ -176,9 +164,8 @@ class EmailSearch:
                     f"@SQL=\"urn:schemas:httpmail:datereceived\" < '{date_str}'"
                 )
             except ValueError:
-                console.print(
-                    f"[yellow]⚠ Formato de fecha_hasta inválido: {date_to}. "
-                    f"Use DD-MM-YYYY[/yellow]"
+                raise ValueError(
+                    f"Formato de fecha_hasta inválido: {date_to}. Use DD-MM-YYYY"
                 )
 
         if has_attachments is not None:
@@ -190,17 +177,10 @@ class EmailSearch:
         if not conditions:
             return ""
 
-        # Combinar condiciones: cuando hay múltiples filtros DASL, hay que
-        # unificar. DASL de Outlook no soporta AND nativo entre @SQL, así que
-        # combinamos en un solo @SQL si es posible.
-        # Estrategia: usar Restrict encadenado o filtro Python para lo demás.
-        # Para simplificar, usamos el primer filtro DASL y validamos el resto
-        # en Python si son incompatibles.
         if len(conditions) == 1:
             return conditions[0]
 
         # Construir filtro combinado con AND
-        # Para DASL, necesitamos usar la sintaxis correcta
         inner_parts = []
         for c in conditions:
             # Extraer la parte interna del @SQL=

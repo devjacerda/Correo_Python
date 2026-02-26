@@ -1,105 +1,11 @@
 """
-Módulo de generación de reportes y tablas con resultados de búsqueda.
-Soporta visualización en consola, exportación a Excel y CSV.
+Módulo de generación de reportes y exportación de resultados.
+Soporta exportación a Excel y CSV, y generación de resúmenes estadísticos.
 """
 
 import os
 from datetime import datetime
 import pandas as pd
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-
-console = Console()
-
-
-def display_table(results: list, max_rows: int = 50):
-    """
-    Muestra los resultados de búsqueda en una tabla formateada en consola.
-    
-    Args:
-        results: Lista de diccionarios con datos de correos
-        max_rows: Máximo de filas a mostrar
-    """
-    if not results:
-        console.print("[yellow]No hay resultados para mostrar.[/yellow]")
-        return
-
-    table = Table(
-        title=f"📧 Resultados de Búsqueda ({len(results)} correos)",
-        show_lines=True,
-        header_style="bold cyan",
-        border_style="blue",
-    )
-
-    table.add_column("#", style="dim", width=4, justify="right")
-    table.add_column("Fecha", width=12)
-    table.add_column("Hora", width=10)
-    table.add_column("Remitente", width=25, no_wrap=True)
-    table.add_column("Asunto", width=45)
-    table.add_column("📎", width=3, justify="center")
-    table.add_column("Importancia", width=10, justify="center")
-
-    for i, email in enumerate(results[:max_rows], 1):
-        att_icon = "✓" if email.get("has_attachments") else ""
-        imp = email.get("importance", "Normal")
-        imp_style = {"Alta": "[red]Alta[/red]", "Baja": "[dim]Baja[/dim]"}.get(
-            imp, imp
-        )
-
-        table.add_row(
-            str(i),
-            email.get("date", ""),
-            email.get("time", ""),
-            _truncate(email.get("sender_name", ""), 25),
-            _truncate(email.get("subject", ""), 45),
-            att_icon,
-            imp_style,
-        )
-
-    console.print(table)
-
-    if len(results) > max_rows:
-        console.print(
-            f"[dim]... mostrando {max_rows} de {len(results)} resultados[/dim]"
-        )
-
-
-def display_detail(email_data: dict):
-    """
-    Muestra el detalle completo de un correo.
-    
-    Args:
-        email_data: Diccionario con datos del correo
-    """
-    content = (
-        f"[bold]De:[/bold] {email_data.get('sender_name', 'N/A')} "
-        f"<{email_data.get('sender_email', 'N/A')}>\n"
-        f"[bold]Para:[/bold] {email_data.get('to', 'N/A')}\n"
-        f"[bold]CC:[/bold] {email_data.get('cc', 'N/A')}\n"
-        f"[bold]Fecha:[/bold] {email_data.get('date', 'N/A')} "
-        f"{email_data.get('time', '')}\n"
-        f"[bold]Importancia:[/bold] {email_data.get('importance', 'Normal')}\n"
-        f"[bold]Categorías:[/bold] {email_data.get('categories', 'N/A')}\n"
-        f"[bold]Tamaño:[/bold] {email_data.get('size_kb', 0)} KB\n"
-    )
-
-    if email_data.get("has_attachments"):
-        att_names = ", ".join(email_data.get("attachment_names", []))
-        content += (
-            f"[bold]Adjuntos ({email_data.get('attachment_count', 0)}):[/bold] "
-            f"{att_names}\n"
-        )
-
-    content += f"\n[bold]Vista previa:[/bold]\n{email_data.get('body_preview', 'N/A')}"
-
-    console.print(
-        Panel(
-            content,
-            title=f"📧 {email_data.get('subject', 'Sin asunto')}",
-            border_style="cyan",
-        )
-    )
 
 
 def export_to_excel(results: list, filepath: str = None) -> str:
@@ -114,7 +20,6 @@ def export_to_excel(results: list, filepath: str = None) -> str:
         Ruta del archivo generado
     """
     if not results:
-        console.print("[yellow]No hay resultados para exportar.[/yellow]")
         return ""
 
     if filepath is None:
@@ -160,7 +65,6 @@ def export_to_excel(results: list, filepath: str = None) -> str:
                 worksheet.cell(row=1, column=i).column_letter
             ].width = min(max_length + 2, 50)
 
-    console.print(f"[green]✓ Reporte exportado a:[/green] {os.path.abspath(filepath)}")
     return os.path.abspath(filepath)
 
 
@@ -176,7 +80,6 @@ def export_to_csv(results: list, filepath: str = None) -> str:
         Ruta del archivo generado
     """
     if not results:
-        console.print("[yellow]No hay resultados para exportar.[/yellow]")
         return ""
 
     if filepath is None:
@@ -206,20 +109,21 @@ def export_to_csv(results: list, filepath: str = None) -> str:
     df = df.rename(columns=column_names)
     df.to_csv(filepath, index=False, encoding="utf-8-sig")
 
-    console.print(f"[green]✓ Reporte exportado a:[/green] {os.path.abspath(filepath)}")
     return os.path.abspath(filepath)
 
 
-def generate_summary(results: list):
+def generate_summary(results: list) -> dict:
     """
     Genera un resumen estadístico de los resultados de búsqueda.
     
     Args:
         results: Lista de diccionarios con datos de correos
+        
+    Returns:
+        Diccionario con el resumen estadístico
     """
     if not results:
-        console.print("[yellow]No hay resultados para resumir.[/yellow]")
-        return
+        return {}
 
     total = len(results)
     with_att = sum(1 for r in results if r.get("has_attachments"))
@@ -235,27 +139,17 @@ def generate_summary(results: list):
     # Rango de fechas
     dates = [r.get("date", "") for r in results if r.get("date") != "N/A"]
 
-    summary = Table(title="📊 Resumen de Búsqueda", border_style="green")
-    summary.add_column("Métrica", style="bold")
-    summary.add_column("Valor", justify="right")
+    summary = {
+        "total": total,
+        "with_attachments": with_att,
+        "pct_attachments": round(with_att / total * 100) if total > 0 else 0,
+        "total_attachments": total_att,
+        "date_min": min(dates) if dates else "N/A",
+        "date_max": max(dates) if dates else "N/A",
+        "top_senders": top_senders,
+    }
 
-    summary.add_row("Total correos", str(total))
-    summary.add_row("Con adjuntos", f"{with_att} ({round(with_att/total*100)}%)")
-    summary.add_row("Total adjuntos", str(total_att))
-    if dates:
-        summary.add_row("Fecha más antigua", min(dates))
-        summary.add_row("Fecha más reciente", max(dates))
-
-    console.print(summary)
-
-    # Top remitentes
-    if top_senders:
-        sender_table = Table(title="👤 Top Remitentes", border_style="cyan")
-        sender_table.add_column("Remitente", width=35)
-        sender_table.add_column("Correos", justify="right", width=10)
-        for name, count in top_senders:
-            sender_table.add_row(_truncate(name, 35), str(count))
-        console.print(sender_table)
+    return summary
 
 
 def _clean_for_export(results: list) -> list:

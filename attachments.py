@@ -5,11 +5,7 @@ Permite descargar adjuntos de los correos encontrados a un directorio.
 
 import os
 from datetime import datetime
-from typing import Optional
-from rich.console import Console
-from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn
-
-console = Console()
+from typing import Optional, Callable
 
 
 def export_attachments(
@@ -18,6 +14,7 @@ def export_attachments(
     organize_by: str = "flat",
     file_types: Optional[list] = None,
     skip_inline: bool = True,
+    progress_callback: Optional[Callable] = None,
 ) -> dict:
     """
     Exporta archivos adjuntos de los correos encontrados.
@@ -33,6 +30,7 @@ def export_attachments(
         file_types: Lista de extensiones a filtrar (ej: ['.pdf', '.xlsx'])
                     None = todos los tipos
         skip_inline: Si True, omite imágenes embebidas (inline)
+        progress_callback: Función opcional (current, total, message) para reportar progreso
         
     Returns:
         Diccionario con resumen de la exportación
@@ -47,6 +45,7 @@ def export_attachments(
         "exported": 0,
         "skipped": 0,
         "errors": 0,
+        "error_details": [],
         "files": [],
     }
 
@@ -56,99 +55,75 @@ def export_attachments(
     stats["emails_with_attachments"] = len(emails_with_att)
 
     if not emails_with_att:
-        console.print("[yellow]No se encontraron correos con adjuntos.[/yellow]")
         return stats
 
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task(
-            "Exportando adjuntos...", total=len(emails_with_att)
-        )
+    total = len(emails_with_att)
 
-        for email_data in emails_with_att:
-            item = email_data.get("_outlook_item")
-            if not item:
-                progress.advance(task)
-                continue
+    for idx, email_data in enumerate(emails_with_att):
+        item = email_data.get("_outlook_item")
+        if not item:
+            continue
 
-            try:
-                att_count = item.Attachments.Count
-                stats["total_attachments"] += att_count
+        try:
+            att_count = item.Attachments.Count
+            stats["total_attachments"] += att_count
 
-                for i in range(att_count):
-                    att = item.Attachments.Item(i + 1)
+            for i in range(att_count):
+                att = item.Attachments.Item(i + 1)
 
-                    try:
-                        filename = att.FileName
+                try:
+                    filename = att.FileName
 
-                        # Omitir imágenes inline
-                        if skip_inline:
-                            try:
-                                # Los adjuntos inline tienen PropertyAccessor
-                                content_id = att.PropertyAccessor.GetProperty(
-                                    "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
-                                )
-                                if content_id:
-                                    stats["skipped"] += 1
-                                    continue
-                            except Exception:
-                                pass
-
-                        # Filtrar por tipo de archivo
-                        if file_types:
-                            ext = os.path.splitext(filename)[1].lower()
-                            if ext not in [ft.lower() for ft in file_types]:
+                    # Omitir imágenes inline
+                    if skip_inline:
+                        try:
+                            content_id = att.PropertyAccessor.GetProperty(
+                                "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+                            )
+                            if content_id:
                                 stats["skipped"] += 1
                                 continue
+                        except Exception:
+                            pass
 
-                        # Determinar subdirectorio
-                        sub_dir = _get_subfolder(
-                            organize_by, email_data
-                        )
-                        target_dir = os.path.join(output_dir, sub_dir) if sub_dir else output_dir
-                        os.makedirs(target_dir, exist_ok=True)
+                    # Filtrar por tipo de archivo
+                    if file_types:
+                        ext = os.path.splitext(filename)[1].lower()
+                        if ext not in [ft.lower() for ft in file_types]:
+                            stats["skipped"] += 1
+                            continue
 
-                        # Manejar nombres duplicados
-                        filepath = _get_unique_path(target_dir, filename)
+                    # Determinar subdirectorio
+                    sub_dir = _get_subfolder(organize_by, email_data)
+                    target_dir = os.path.join(output_dir, sub_dir) if sub_dir else output_dir
+                    os.makedirs(target_dir, exist_ok=True)
 
-                        # Guardar archivo
-                        att.SaveAsFile(filepath)
-                        stats["exported"] += 1
-                        stats["files"].append(
-                            {
-                                "filename": os.path.basename(filepath),
-                                "path": filepath,
-                                "from_subject": email_data.get("subject", ""),
-                                "from_sender": email_data.get("sender_name", ""),
-                                "date": email_data.get("date", ""),
-                            }
-                        )
+                    # Manejar nombres duplicados
+                    filepath = _get_unique_path(target_dir, filename)
 
-                    except Exception as e:
-                        stats["errors"] += 1
-                        console.print(
-                            f"  [red]Error al exportar '{att.FileName}': {e}[/red]"
-                        )
+                    # Guardar archivo
+                    att.SaveAsFile(filepath)
+                    stats["exported"] += 1
+                    stats["files"].append(
+                        {
+                            "filename": os.path.basename(filepath),
+                            "path": filepath,
+                            "from_subject": email_data.get("subject", ""),
+                            "from_sender": email_data.get("sender_name", ""),
+                            "date": email_data.get("date", ""),
+                        }
+                    )
 
-            except Exception as e:
-                stats["errors"] += 1
-                console.print(f"  [red]Error procesando correo: {e}[/red]")
+                except Exception as e:
+                    stats["errors"] += 1
+                    stats["error_details"].append(str(e))
 
-            progress.advance(task)
+        except Exception as e:
+            stats["errors"] += 1
+            stats["error_details"].append(f"Error procesando correo: {e}")
 
-    # Resumen
-    console.print(f"\n[green]✓ Exportación completada:[/green]")
-    console.print(f"  📧 Correos procesados: {stats['emails_with_attachments']}")
-    console.print(f"  📎 Adjuntos exportados: {stats['exported']}")
-    if stats["skipped"]:
-        console.print(f"  ⏭️  Omitidos: {stats['skipped']}")
-    if stats["errors"]:
-        console.print(f"  ❌ Errores: {stats['errors']}")
-    console.print(f"  📁 Directorio: {output_dir}")
+        if progress_callback:
+            progress_callback(idx + 1, total, f"Procesando {idx + 1}/{total}...")
 
     return stats
 

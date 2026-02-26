@@ -1,4 +1,4 @@
 pywin32>=306
 pandas>=2.0.0
 openpyxl>=3.1.0
-rich>=13.0.0
+ttkbootstrap>=1.10.0

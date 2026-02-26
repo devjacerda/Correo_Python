@@ -5,9 +5,6 @@ Gestiona la conexión al cliente de Outlook y acceso a carpetas del buzón.
 
 import win32com.client
 import pythoncom
-from rich.console import Console
-
-console = Console()
 
 
 class OutlookClient:
@@ -37,13 +34,11 @@ class OutlookClient:
             pythoncom.CoInitialize()
             self.outlook = win32com.client.Dispatch("Outlook.Application")
             self.namespace = self.outlook.GetNamespace("MAPI")
-            console.print("[green]✓[/green] Conexión con Outlook establecida.")
         except Exception as e:
-            console.print(f"[red]✗ Error al conectar con Outlook:[/red] {e}")
-            console.print(
-                "[yellow]  Asegúrate de que Outlook esté abierto y configurado.[/yellow]"
+            raise ConnectionError(
+                f"No se pudo conectar con Outlook. "
+                f"Asegúrate de que Outlook esté abierto y configurado. Error: {e}"
             )
-            raise
 
     def get_default_folder(self, folder_type: str = "inbox"):
         """
@@ -115,7 +110,7 @@ class OutlookClient:
             max_depth: Profundidad máxima de recursión
             
         Returns:
-            Lista de tuplas (nombre, ruta, cantidad_items)
+            Lista de tuplas (nombre, ruta, cantidad_items, indent)
         """
         folders_info = []
 
