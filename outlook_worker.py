@@ -26,6 +26,7 @@ class OutlookWorker(threading.Thread):
         self.client = None
         self.searcher = None
         self.last_results = []  # resultados CON _outlook_item (viven en este thread)
+        self.cancel_event = threading.Event()  # señal para detener búsqueda
 
     def run(self):
         """Loop principal del worker thread."""
@@ -60,7 +61,12 @@ class OutlookWorker(threading.Thread):
 
     def submit(self, task_name, kwargs, on_success, on_error):
         """Envía una tarea al worker thread."""
+        self.cancel_event.clear()  # resetear señal de cancelación
         self.tasks.put((task_name, kwargs, on_success, on_error))
+
+    def cancel_search(self):
+        """Detiene la búsqueda en curso."""
+        self.cancel_event.set()
 
     # === Tareas ===
 
@@ -69,12 +75,17 @@ class OutlookWorker(threading.Thread):
         def progress_cb(current, msg):
             self.app.after(0, self.app._on_search_progress, current, msg)
 
-        results = self.searcher.search(progress_callback=progress_cb, **kwargs)
+        results = self.searcher.search(
+            progress_callback=progress_cb,
+            cancel_event=self.cancel_event,
+            **kwargs,
+        )
         self.last_results = results
 
         # Enviar resultados limpios (sin COM refs) a la GUI
         clean = self.searcher.get_results_without_item(results)
-        self.app.after(0, on_success, clean)
+        cancelled = self.cancel_event.is_set()
+        self.app.after(0, on_success, clean, cancelled)
 
     def _do_quick_search_all(self, kwargs, on_success):
         """Búsqueda rápida en subject + sender, combinada."""
@@ -85,10 +96,16 @@ class OutlookWorker(threading.Thread):
             self.app.after(0, self.app._on_search_progress, current, msg)
 
         results = self.searcher.search(
-            subject=term, max_results=max_results, progress_callback=progress_cb
+            subject=term, max_results=max_results,
+            progress_callback=progress_cb, cancel_event=self.cancel_event,
         )
+        if self.cancel_event.is_set():
+            clean = self.searcher.get_results_without_item(results)
+            self.app.after(0, on_success, clean, True)
+            return
         results_sender = self.searcher.search(
-            sender=term, max_results=max_results
+            sender=term, max_results=max_results,
+            cancel_event=self.cancel_event,
         )
 
         seen = {(r["subject"], r["date"], r["time"]) for r in results}
@@ -100,7 +117,8 @@ class OutlookWorker(threading.Thread):
 
         self.last_results = results
         clean = self.searcher.get_results_without_item(results)
-        self.app.after(0, on_success, clean)
+        cancelled = self.cancel_event.is_set()
+        self.app.after(0, on_success, clean, cancelled)
 
     def _do_export_attachments(self, kwargs, on_success):
         """Exporta adjuntos usando las refs COM almacenadas."""

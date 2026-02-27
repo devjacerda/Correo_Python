@@ -92,6 +92,9 @@ class SearchFrame(ttk.Frame):
         self.v_body = ttk.StringVar()
         ttk.Entry(r4, textvariable=self.v_body, width=30).pack(side=LEFT, padx=4)
 
+        self.btn_stop_adv = ttk.Button(r4, text="⛔ Detener", bootstyle=DANGER,
+                                       command=self._cancel_search, width=12)
+
         self.btn_search = ttk.Button(r4, text="🔍 Buscar", bootstyle=PRIMARY,
                                      command=self._search_advanced, width=14)
         self.btn_search.pack(side=RIGHT)
@@ -111,6 +114,9 @@ class SearchFrame(ttk.Frame):
         self.v_scope = ttk.StringVar(value="subject")
         ttk.Combobox(f, textvariable=self.v_scope, width=8, state="readonly",
                      values=["subject", "sender", "all"]).pack(side=LEFT, padx=(0, 8))
+
+        self.btn_stop_quick = ttk.Button(f, text="⛔ Detener", bootstyle=DANGER,
+                                         command=self._cancel_search, width=12)
 
         self.btn_quick = ttk.Button(f, text="⚡ Buscar", bootstyle=SUCCESS,
                                     command=self._search_quick, width=12)
@@ -215,9 +221,15 @@ class SearchFrame(ttk.Frame):
         self._set_searching(True)
         self.status_var.set("🔍 Buscando correos...")
         self.tree.delete(*self.tree.get_children())
+        self._set_action_buttons(DISABLED)
         self.worker.submit(task_name, kwargs, self._on_results, self._on_error)
 
-    def _on_results(self, clean_results):
+    def _cancel_search(self):
+        """Detiene la búsqueda en curso."""
+        self.worker.cancel_search()
+        self.status_var.set("⛔ Deteniendo búsqueda...")
+
+    def _on_results(self, clean_results, cancelled=False):
         """Callback con resultados limpios del worker."""
         self.last_results = clean_results
         self._fill_table(clean_results)
@@ -225,7 +237,11 @@ class SearchFrame(ttk.Frame):
 
         n = len(clean_results)
         self.v_count.set(f"{n} correo{'s' if n != 1 else ''}")
-        if n > 0:
+        if cancelled:
+            self.status_var.set(f"⛔ Búsqueda detenida. {n} correos parciales.")
+            if n > 0:
+                self._set_action_buttons(NORMAL)
+        elif n > 0:
             self.status_var.set(f"✓ {n} correos encontrados.")
             self._set_action_buttons(NORMAL)
         else:
@@ -320,9 +336,16 @@ class SearchFrame(ttk.Frame):
     # ══════════════ Helpers ══════════════
 
     def _set_searching(self, busy):
-        st = DISABLED if busy else NORMAL
-        self.btn_search.configure(state=st)
-        self.btn_quick.configure(state=st)
+        if busy:
+            self.btn_search.pack_forget()
+            self.btn_stop_adv.pack(side=RIGHT)
+            self.btn_quick.pack_forget()
+            self.btn_stop_quick.pack(side=RIGHT)
+        else:
+            self.btn_stop_adv.pack_forget()
+            self.btn_search.pack(side=RIGHT)
+            self.btn_stop_quick.pack_forget()
+            self.btn_quick.pack(side=RIGHT)
 
     def _set_action_buttons(self, state):
         for b in (self.btn_excel, self.btn_csv, self.btn_att, self.btn_det, self.btn_sum):

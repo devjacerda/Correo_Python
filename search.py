@@ -3,6 +3,7 @@ Módulo de búsqueda de correos en Outlook.
 Permite búsquedas flexibles por múltiples criterios con soporte de filtros DASL.
 """
 
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 
@@ -30,6 +31,7 @@ class EmailSearch:
         max_results: int = 500,
         subfolder: Optional[str] = None,
         progress_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> list:
         """
         Busca correos con múltiples filtros.
@@ -75,6 +77,8 @@ class EmailSearch:
             count = 0
             for item in items:
                 if count >= max_results:
+                    break
+                if cancel_event and cancel_event.is_set():
                     break
 
                 try:
